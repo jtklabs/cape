@@ -1,0 +1,20 @@
+#!/bin/bash
+# Checkmk agent plugin: emit UXI sensor piggyback data.
+#
+# Install on the host whose agent should carry the UXI data (usually the
+# Checkmk server itself), with an execution interval to respect API limits:
+#     /usr/lib/check_mk_agent/plugins/300/uxi_piggyback   (runs every 300s)
+# chmod +x it. Adjust the paths/env below for your install.
+
+export UXI_SECRET_ID="uxi/api-credentials"
+export AWS_REGION="us-east-1"
+export UXI_REGION="us-west"
+# Credentials for Secrets Manager come from the instance role / profile.
+# If the agent runs as root without one: export AWS_PROFILE=... or key vars.
+
+CAPE_DIR="/opt/cape"           # directory containing the cape/ package
+PYTHON="/usr/bin/python3"
+
+cd "$CAPE_DIR" || exit 0
+# stderr (logging) must not pollute agent output
+exec "$PYTHON" -m cape checkmk --host-prefix "uxi-" 2>/dev/null

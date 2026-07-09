@@ -1,0 +1,11 @@
+# Collected data — contains internal network/fleet details
+out/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
