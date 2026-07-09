@@ -38,6 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="AWS Secrets Manager secret id/ARN (env: UXI_SECRET_ID).")
     p.add_argument("--aws-region", default=os.environ.get("AWS_REGION"),
                    help="AWS region for Secrets Manager (env: AWS_REGION).")
+    p.add_argument("--client-id-key", default=os.environ.get("UXI_CLIENT_ID_KEY"),
+                   help="Key holding the UXI client id inside the (shared) secret "
+                        "(env: UXI_CLIENT_ID_KEY; default: uxi_client_id, then client_id).")
+    p.add_argument("--client-secret-key", default=os.environ.get("UXI_CLIENT_SECRET_KEY"),
+                   help="Key holding the UXI client secret inside the (shared) secret "
+                        "(env: UXI_CLIENT_SECRET_KEY; default: uxi_client_secret, then client_secret).")
     p.add_argument("--region", default=os.environ.get("UXI_REGION", DEFAULT_REGION),
                    choices=list(API_BASES), help="UXI API region.")
     p.add_argument("--out", type=Path, default=None,
@@ -105,7 +111,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "checkmk":
         from .checkmk import build_piggyback
-        creds = fetch_credentials(args.secret_id, region_name=args.aws_region)
+        creds = fetch_credentials(args.secret_id, region_name=args.aws_region,
+                              client_id_key=args.client_id_key,
+                              client_secret_key=args.client_secret_key)
         client = UXIClient(creds, region=args.region)
         sys.stdout.write(build_piggyback(
             client, host_field=args.host_field, host_prefix=args.host_prefix))
@@ -119,7 +127,9 @@ def main(argv: list[str] | None = None) -> int:
         category, names = COMMAND_MAP[args.command]
         resources = select_resources(category=category, names=names)
 
-    creds = fetch_credentials(args.secret_id, region_name=args.aws_region)
+    creds = fetch_credentials(args.secret_id, region_name=args.aws_region,
+                              client_id_key=args.client_id_key,
+                              client_secret_key=args.client_secret_key)
     client = UXIClient(creds, region=args.region)
 
     exit_code = 0
@@ -138,7 +148,9 @@ def main(argv: list[str] | None = None) -> int:
 def cmd_status(args) -> int:
     from .status import collect_statuses
 
-    creds = fetch_credentials(args.secret_id, region_name=args.aws_region)
+    creds = fetch_credentials(args.secret_id, region_name=args.aws_region,
+                              client_id_key=args.client_id_key,
+                              client_secret_key=args.client_secret_key)
     client = UXIClient(creds, region=args.region)
     statuses, issues = collect_statuses(client)
 

@@ -16,13 +16,21 @@ clients** → **Create Personal API Client**. Pick the **User Experience Insight
 service for your region. Save the **Client ID** and **Client Secret**.
 
 ### 2. Store them in AWS Secrets Manager
-The secret value must be JSON with these two keys:
+The secret is a JSON key/value map and **may be shared with other
+applications** — only the two UXI keys are read. Default key names are
+`uxi_client_id` / `uxi_client_secret` (with `client_id` / `client_secret`
+as fallback):
 
-```bash
-aws secretsmanager create-secret \
-  --name uxi/api-credentials \
-  --secret-string '{"client_id":"YOUR_ID","client_secret":"YOUR_SECRET"}'
+```json
+{
+  "some_other_app_key": "...",
+  "uxi_client_id": "YOUR_ID",
+  "uxi_client_secret": "YOUR_SECRET"
+}
 ```
+
+Using different key names? Point at them with `--client-id-key` /
+`--client-secret-key` (env: `UXI_CLIENT_ID_KEY` / `UXI_CLIENT_SECRET_KEY`).
 
 The IAM role/user running this needs `secretsmanager:GetSecretValue` on that secret.
 
