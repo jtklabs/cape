@@ -1,11 +1,24 @@
-"""Fetch UXI API credentials from AWS Secrets Manager."""
+"""Resolve UXI API credentials.
+
+Two sources are supported:
+  * env   — UXI_CLIENT_ID / UXI_CLIENT_SECRET environment variables. For hosts
+            with no AWS access (on-prem Checkmk servers, laptops, CI).
+  * aws   — a JSON key/value secret in AWS Secrets Manager, which may be shared
+            with other applications.
+
+`resolve_credentials()` picks env vars when present, otherwise Secrets Manager.
+"""
 from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
+
+ENV_CLIENT_ID = "UXI_CLIENT_ID"
+ENV_CLIENT_SECRET = "UXI_CLIENT_SECRET"
 
 
 @dataclass(frozen=True)
@@ -70,3 +83,50 @@ def fetch_credentials(
 
     log.info("Loaded UXI credentials from secret '%s'", secret_id)
     return Credentials(client_id=client_id, client_secret=client_secret)
+
+
+def credentials_from_env() -> Credentials | None:
+    """Read credentials from UXI_CLIENT_ID / UXI_CLIENT_SECRET, if both set."""
+    cid = os.environ.get(ENV_CLIENT_ID)
+    csec = os.environ.get(ENV_CLIENT_SECRET)
+    if cid and csec:
+        log.info("Loaded UXI credentials from environment")
+        return Credentials(client_id=cid, client_secret=csec)
+    return None
+
+
+def resolve_credentials(
+    secret_id: str | None = None,
+    region_name: str | None = None,
+    client_id_key: str | None = None,
+    client_secret_key: str | None = None,
+    source: str = "auto",
+) -> Credentials:
+    """Resolve credentials from the configured source.
+
+    source: 'auto' (env if set, else AWS), 'env', or 'aws'.
+    """
+    if source not in ("auto", "env", "aws"):
+        raise ValueError("source must be one of: auto, env, aws")
+
+    if source in ("auto", "env"):
+        creds = credentials_from_env()
+        if creds:
+            return creds
+        if source == "env":
+            raise RuntimeError(
+                f"source=env but {ENV_CLIENT_ID}/{ENV_CLIENT_SECRET} are not both set."
+            )
+
+    if not secret_id:
+        raise RuntimeError(
+            "No credentials found. Either set "
+            f"{ENV_CLIENT_ID}/{ENV_CLIENT_SECRET}, or pass a Secrets Manager "
+            "secret id (--secret-id / UXI_SECRET_ID)."
+        )
+    return fetch_credentials(
+        secret_id,
+        region_name=region_name,
+        client_id_key=client_id_key,
+        client_secret_key=client_secret_key,
+    )
