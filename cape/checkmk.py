@@ -38,7 +38,11 @@ _SENSOR_FIELDS = (
 
 def hostname_for(sensor: dict, field: str = "name", prefix: str = "") -> str:
     raw = (sensor.get(field) or sensor.get("serial") or sensor.get("id") or "unknown")
-    clean = _INVALID.sub("-", str(raw)).strip("-.")
+    clean = _INVALID.sub("-", str(raw))
+    # Collapse runs of separators so "1550 - 2nd Floor" becomes
+    # "1550-2nd-Floor" rather than "1550---2nd-Floor". Host renames lose
+    # historical data in Checkmk, so names must be stable and tidy up front.
+    clean = re.sub(r"-{2,}", "-", clean).strip("-.")
     return f"{prefix}{clean}" if clean else f"{prefix}{sensor.get('id', 'unknown')}"
 
 
