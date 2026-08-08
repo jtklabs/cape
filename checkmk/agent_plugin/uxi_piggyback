@@ -6,12 +6,26 @@
 #     /usr/lib/check_mk_agent/plugins/300/uxi_piggyback   (runs every 300s)
 # chmod +x it. Adjust the paths/env below for your install.
 
-export UXI_SECRET_ID="uxi/api-credentials"   # may be a shared multi-app secret
-export AWS_REGION="us-east-1"
 export UXI_REGION="us-west"
-# If the UXI keys in the shared secret aren't uxi_client_id/uxi_client_secret:
-# export UXI_CLIENT_ID_KEY="my_key_name"
-# export UXI_CLIENT_SECRET_KEY="my_other_key_name"
+
+# Credentials. Two options:
+#
+# (a) Hosts WITHOUT AWS access — put the client id/secret in a root-only file
+#     /etc/cape/uxi.env (chmod 600, owned by root):
+#         UXI_CLIENT_ID=...
+#         UXI_CLIENT_SECRET=...
+#     It is sourced below if present. Keep secrets out of this script so it
+#     stays safe to track in git.
+#
+# (b) Hosts WITH AWS access — leave the file absent and use Secrets Manager:
+#         export UXI_SECRET_ID="test_secrets"   # may be a shared multi-app secret
+#         export AWS_REGION="us-east-1"
+#     If the UXI keys in that secret aren't uxi_client_id/uxi_client_secret:
+#         export UXI_CLIENT_ID_KEY="my_key_name"
+#         export UXI_CLIENT_SECRET_KEY="my_other_key_name"
+if [ -r /etc/cape/uxi.env ]; then
+    set -a; . /etc/cape/uxi.env; set +a
+fi
 # Credentials for Secrets Manager come from the instance role / profile.
 # If the agent runs as root without one: export AWS_PROFILE=... or key vars.
 
