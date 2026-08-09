@@ -5,7 +5,7 @@ import logging
 import time
 from urllib.parse import urlparse
 
-from .config import API_BASES, MIN_REQUEST_INTERVAL, TOKEN_URL
+from .config import API_BASES, DASHBOARD_BASES, MIN_REQUEST_INTERVAL, TOKEN_URL
 from .secrets import Credentials
 
 log = logging.getLogger(__name__)
@@ -25,6 +25,7 @@ class UXIClient:
 
         self._creds = creds
         self.base = API_BASES[region]
+        self.dashboard_base = DASHBOARD_BASES[region]
         self.timeout = timeout
         self._session = requests.Session()
         self._token: str | None = None
@@ -84,6 +85,33 @@ class UXIClient:
             )
         if not resp.ok:
             raise RuntimeError(f"GET {url} failed ({resp.status_code}): {resp.text}")
+        return resp.json()
+
+    def post_dashboard(self, path: str, payload: dict) -> dict:
+        """POST to the dashboard backend (see config.DASHBOARD_BASES)."""
+        self._throttle()
+        token = self._ensure_token()
+        url = self.dashboard_base + path
+        resp = self._session.post(
+            url,
+            json=payload,
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json",
+                     "Accept": "application/json"},
+            timeout=self.timeout,
+        )
+        if resp.status_code == 401:
+            self._token = None
+            token = self._ensure_token()
+            self._throttle()
+            resp = self._session.post(
+                url, json=payload,
+                headers={"Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json"},
+                timeout=self.timeout,
+            )
+        if not resp.ok:
+            raise RuntimeError(f"POST {url} failed ({resp.status_code}): {resp.text[:200]}")
         return resp.json()
 
     def get_one(self, path: str, params: dict | None = None) -> dict:

@@ -47,11 +47,20 @@ def hostname_for(sensor: dict, field: str = "name", prefix: str = "") -> str:
 
 
 def build_piggyback(
-    client: UXIClient, *, host_field: str = "name", host_prefix: str = "uxi-"
+    client: UXIClient, *, host_field: str = "name", host_prefix: str = "uxi-",
+    with_metrics: bool = True, metrics_window: int = 3600,
 ) -> str:
-    """Collect inventory + status and render Checkmk piggyback output."""
+    """Collect inventory + status (+ test metrics) and render piggyback output."""
     sensors = client.get_all("/sensors")
     statuses, issues = collect_statuses(client, sensors=sensors)
+
+    metrics_by_sensor: dict[str, dict] = {}
+    if with_metrics:
+        try:
+            from .metrics import collect_metrics
+            metrics_by_sensor = collect_metrics(client, window_seconds=metrics_window)
+        except Exception as e:  # noqa: BLE001 — metrics are best-effort
+            log.warning("metric collection failed, continuing without: %s", e)
 
     by_id_status = {s["sensorId"]: s for s in statuses}
     issues_by_sensor: dict[str, list[dict]] = {}
@@ -95,6 +104,10 @@ def build_piggyback(
         out.append("<<<uxi_issues:sep(0)>>>")
         for issue in sensor_issues:
             out.append(json.dumps(issue, sort_keys=True, default=str))
+        sensor_metrics = metrics_by_sensor.get(s["id"])
+        if sensor_metrics:
+            out.append("<<<uxi_metrics:sep(0)>>>")
+            out.append(json.dumps(sensor_metrics, sort_keys=True))
         out.append("<<<<>>>>")
 
     return "\n".join(out) + "\n"

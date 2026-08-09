@@ -150,6 +150,81 @@ check_plugin_uxi_issues = CheckPlugin(
 )
 
 
+# --- uxi_metrics -----------------------------------------------------------
+agent_section_uxi_metrics = AgentSection(name="uxi_metrics", parse_function=parse_uxi_sensor)
+
+# metric key -> (label, unit, render divisor)
+_METRIC_LABELS = {
+    "dhcp_elapsed_time": ("DHCP", "ms"),
+    "dns_elapsed_time": ("DNS", "ms"),
+    "assoc_elapsed_time": ("Association", "ms"),
+    "eap_time": ("EAP", "ms"),
+    "auth_elapsed_time": ("802.1X auth", "ms"),
+    "rssi": ("RSSI", "dBm"),
+    "mean_rssi": ("Mean RSSI", "dBm"),
+    "channel_utilisation": ("Channel util", "%"),
+    "rx_datarate": ("RX rate", "bits/s"),
+    "tx_datarate": ("TX rate", "bits/s"),
+}
+
+
+def discover_uxi_metrics(section: dict | None) -> DiscoveryResult:
+    if section:
+        yield Service()
+
+
+def check_uxi_metrics(params: dict, section: dict | None) -> CheckResult:
+    """Emit each measurement as a Checkmk metric, with optional thresholds.
+
+    params may carry {"<metric_key>": (warn, crit)} upper-bound levels.
+    """
+    if not section:
+        return
+
+    summary_bits = []
+    for key, value in sorted(section.items()):
+        if not isinstance(value, (int, float)):
+            continue
+        label, unit = _METRIC_LABELS.get(key, (key, ""))
+        yield Metric(f"uxi_{key}", float(value))
+
+        state = State.OK
+        levels = (params or {}).get(key)
+        if levels:
+            warn, crit = levels
+            if value >= crit:
+                state = State.CRIT
+            elif value >= warn:
+                state = State.WARN
+
+        if unit == "bits/s":
+            shown = f"{value / 1e6:.1f} Mbit/s"
+        elif unit == "ms":
+            shown = f"{value:.0f} ms"
+        elif unit == "%":
+            shown = f"{value:.1f}%"
+        else:
+            shown = f"{value:.1f} {unit}".strip()
+
+        if state is State.OK:
+            summary_bits.append(f"{label}: {shown}")
+        else:
+            yield Result(state=state, summary=f"{label}: {shown}")
+
+    if summary_bits:
+        yield Result(state=State.OK, summary=", ".join(summary_bits))
+
+
+check_plugin_uxi_metrics = CheckPlugin(
+    name="uxi_metrics",
+    service_name="UXI Metrics",
+    discovery_function=discover_uxi_metrics,
+    check_function=check_uxi_metrics,
+    check_default_parameters={},
+    check_ruleset_name="uxi_metrics",
+)
+
+
 # --- uxi_fleet -------------------------------------------------------------
 agent_section_uxi_fleet = AgentSection(name="uxi_fleet", parse_function=parse_uxi_sensor)
 

@@ -22,6 +22,15 @@ API_BASES = {
 }
 DEFAULT_REGION = "us-west"
 
+# The dashboard's own backend. Undocumented, but it accepts the SAME OAuth
+# bearer token as the public API (verified live) and is the only pull-based
+# source of test-result time series — the public v1alpha1 API exposes none.
+# See cape/metrics.py.
+DASHBOARD_BASES = {
+    "us-west": "https://dashboard.capenetworks.com/api",
+    "eu-central": "https://dashboard.eu.capenetworks.com/api",
+}
+
 # Stay below the documented 5 requests/sec per-customer limit.
 MIN_REQUEST_INTERVAL = 0.25  # seconds between requests
 
