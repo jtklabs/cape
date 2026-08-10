@@ -38,6 +38,11 @@ so get no **UXI Metrics** service — expected, since they aren't running tests.
 Everything below was performed and verified on a live site. Substitute your
 site name for `cmk`.
 
+> Installing with all files on a data disk? Skip to
+> **[Install on /data — complete sequence](#install-on-data--complete-sequence)**
+> for the whole thing as one copy-paste run. The steps below cover both layouts
+> but interleave them.
+
 ### 1. Prerequisites
 ```bash
 python3 -c "import requests" || sudo pip3 install requests
@@ -182,6 +187,67 @@ discovery explicitly:
 sudo -iu cmk cmk -II $(sudo -iu cmk cmk --list-hosts | grep '^uxi-' | tr '\n' ' ')
 sudo -iu cmk cmk -O
 ```
+
+## Install on /data — complete sequence
+
+Everything above, condensed into one copy-paste run for the data-disk layout.
+Code and credentials live on `/data`; every path Checkmk expects is a symlink.
+Substitute your site name for `cmk` and the host running the agent for
+`checkmk`.
+
+```bash
+# 1. Layout. Every parent must be traversable by the site user (755),
+#    or check-plugin discovery silently finds nothing.
+sudo mkdir -p /data/cape/etc
+sudo git clone https://github.com/jtklabs/cape.git /data/cape/repo
+sudo chmod 755 /data /data/cape
+
+# 2. Credentials on /data (600 root:root applies to the TARGET, not the link).
+#    CAPE_DIR here is how the agent plugin finds the code — no script edits.
+sudo tee /data/cape/etc/uxi.env >/dev/null <<'EOF'
+UXI_CLIENT_ID=your-client-id
+UXI_CLIENT_SECRET=your-client-secret
+CAPE_DIR=/data/cape/repo
+EOF
+sudo chmod 600 /data/cape/etc/uxi.env
+sudo chown root:root /data/cape/etc/uxi.env
+
+# 3. SYMLINK 1 — credentials
+sudo mkdir -p /etc/cape && sudo chmod 700 /etc/cape
+sudo ln -sfn /data/cape/etc/uxi.env /etc/cape/uxi.env
+
+# 4. SYMLINK 2 — agent plugin (5-minute cache interval)
+sudo mkdir -p /usr/lib/check_mk_agent/plugins/300
+sudo chmod +x /data/cape/repo/checkmk/agent_plugin/uxi_piggyback
+sudo ln -sfn /data/cape/repo/checkmk/agent_plugin/uxi_piggyback \
+  /usr/lib/check_mk_agent/plugins/300/uxi_piggyback
+
+# 5. SYMLINK 3 — check plugins
+sudo -u cmk mkdir -p /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based
+sudo ln -sfn /data/cape/repo/checkmk/cmk_addons_plugins/uxi/agent_based/uxi.py \
+  /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py
+
+# 6. Checkpoint — verify before creating hosts
+sudo /usr/lib/check_mk_agent/plugins/300/uxi_piggyback | head -5   # piggyback blocks
+sudo -iu cmk cmk -L | grep '^uxi_'                                  # all four plugins
+
+# 7. Hosts via DCD, then apply
+sudo -iu cmk python3 /data/cape/repo/checkmk/setup_dcd.py --site cmk --source-host checkmk
+sudo -iu cmk cmk -O
+sudo -iu cmk omd restart dcd
+
+# 8. Verify (hosts appear within ~60s)
+sudo -iu cmk cmk --list-hosts | grep -c '^uxi-'
+```
+
+Stop at step 6 if either check is empty — creating hosts first only makes the
+problem harder to see. No piggyback output means credentials failed (rerun the
+plugin without `2>/dev/null` to see the error); no plugins listed means the site
+user cannot traverse `/data`.
+
+Updating later is `sudo git -C /data/cape/repo pull` — the symlinks point at the
+repo, so both plugins update in place; follow with `cmk -O` for check-plugin
+changes.
 
 ## Uninstall
 ```bash
