@@ -21,6 +21,21 @@ agent_based **v2** API, which exists from **2.3** onward, so 2.3/2.4 should
 work — but only 2.5 has been tested. Checkmk **2.2** uses the v1 API under
 `local/lib/check_mk/base/plugins/agent_based/` and would need import changes.
 
+## Layout
+
+All files live on the `/data` disk; every path Checkmk expects is a **symlink**
+into it. Verified working — Checkmk discovers symlinked check plugins and
+executes symlinked agent plugins.
+
+| Checkmk expects | Symlink target on `/data` |
+|---|---|
+| `/etc/cape/uxi.env` | `/data/cape/etc/uxi.env` |
+| `/usr/lib/check_mk_agent/plugins/300/uxi_piggyback` | `/data/cape/repo/checkmk/agent_plugin/uxi_piggyback` |
+| `<site>/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py` | `/data/cape/repo/checkmk/cmk_addons_plugins/uxi/agent_based/uxi.py` |
+
+The code itself is never copied — the symlinks point straight at the git
+checkout, so `git pull` updates both plugins in place.
+
 ## Services created
 
 | Service | Where | Logic | Metrics |
@@ -30,142 +45,92 @@ work — but only 2.5 has been tested. Checkmk **2.2** uses the v1 API under
 | **UXI Metrics** | each sensor host | OK unless levels configured | DHCP/DNS/association/EAP/auth latency, channel utilisation, RSSI, RX/TX data rates |
 | **UXI Fleet** | plugin host | any sensor offline → WARN | totals: online/offline/issues |
 
-Sensors that are offline (or not testing) produce no `uxi_metrics` section and
-so get no **UXI Metrics** service — expected, since they aren't running tests.
+Offline (or non-testing) sensors emit no `uxi_metrics` section and so get no
+**UXI Metrics** service — expected, since they aren't running tests.
 
 ## Install
 
-Everything below was performed and verified on a live site. Substitute your
-site name for `cmk`.
-
-> Installing with all files on a data disk? Skip to
-> **[Install on /data — complete sequence](#install-on-data--complete-sequence)**
-> for the whole thing as one copy-paste run. The steps below cover both layouts
-> but interleave them.
+Substitute your site name for `cmk`, and `checkmk` for the host whose agent will
+carry the data (usually the Checkmk server itself). Run top to bottom.
 
 ### 1. Prerequisites
 ```bash
 python3 -c "import requests" || sudo pip3 install requests
-# boto3 is ONLY needed if you use AWS Secrets Manager for credentials
+# boto3 is ONLY needed if you use AWS Secrets Manager instead of the env file
 ```
 
-### 2. Deploy the collector
-
-**Standard layout** — everything under `/opt`:
+### 2. Lay out /data
+Every parent must be traversable by the site user (`755`), or check-plugin
+discovery silently finds nothing.
 ```bash
-sudo git clone https://github.com/jtklabs/cape.git /opt/cape
-```
-
-**Data-disk layout** — all files live on `/data`, symlinked into place. Verified
-working: Checkmk discovers symlinked check plugins and executes symlinked agent
-plugins.
-```bash
-sudo mkdir -p /data/cape
-sudo git clone https://github.com/jtklabs/cape.git /data/cape/repo
 sudo mkdir -p /data/cape/etc
-# Every parent must be traversable by the site user, or plugin discovery fails
+sudo git clone https://github.com/jtklabs/cape.git /data/cape/repo
 sudo chmod 755 /data /data/cape
 ```
-Then use these paths in the steps below (each is a symlink into `/data`):
 
-| Needs to be at | Symlink target on `/data` |
-|---|---|
-| `/opt/cape` (code) | `/data/cape/repo` |
-| `/etc/cape/uxi.env` (credentials) | `/data/cape/etc/uxi.env` |
-| `/usr/lib/check_mk_agent/plugins/300/uxi_piggyback` | `/data/cape/repo/checkmk/agent_plugin/uxi_piggyback` |
-| `<site>/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py` | `/data/cape/repo/checkmk/cmk_addons_plugins/uxi/agent_based/uxi.py` |
-
-Symlinking the agent plugin straight at the repo means `git pull` updates it in
-place. The check plugin is the same file the site loads, so a pull plus
-`cmk -O` is enough to roll out changes.
-
-### 3. Credentials — pick ONE
-
-**(a) No AWS access** (typical for on-prem sites). Create a root-only env file;
-the agent plugin sources it automatically:
-```bash
-sudo mkdir -p /etc/cape && sudo chmod 700 /etc/cape
-sudo tee /etc/cape/uxi.env >/dev/null <<'EOF'
-UXI_CLIENT_ID=your-client-id
-UXI_CLIENT_SECRET=your-client-secret
-EOF
-sudo chmod 600 /etc/cape/uxi.env && sudo chown root:root /etc/cape/uxi.env
-```
-
-*Data-disk layout:* write the real file to `/data/cape/etc/uxi.env`, add
-`CAPE_DIR=/data/cape/repo` to it so the wrapper finds the code, then symlink:
+### 3. Credentials
+`600 root:root` applies to the **target** file, not the symlink. `CAPE_DIR` is
+how the agent plugin locates the code, so the wrapper needs no edits.
 ```bash
 sudo tee /data/cape/etc/uxi.env >/dev/null <<'EOF'
 UXI_CLIENT_ID=your-client-id
 UXI_CLIENT_SECRET=your-client-secret
 CAPE_DIR=/data/cape/repo
 EOF
-sudo chmod 600 /data/cape/etc/uxi.env && sudo chown root:root /data/cape/etc/uxi.env
+sudo chmod 600 /data/cape/etc/uxi.env
+sudo chown root:root /data/cape/etc/uxi.env
+```
+
+*Using AWS Secrets Manager instead?* Put `UXI_SECRET_ID=...` and `AWS_REGION=...`
+in that file rather than the id/secret. The secret is a JSON key/value map;
+keys default to `uxi_client_id` / `uxi_client_secret` (falling back to
+`client_id` / `client_secret`). The agent runs as **root**, so root needs AWS
+credentials.
+
+### 4. Symlink 1 — credentials
+```bash
 sudo mkdir -p /etc/cape && sudo chmod 700 /etc/cape
 sudo ln -sfn /data/cape/etc/uxi.env /etc/cape/uxi.env
 ```
-Permissions are enforced on the **target**, not the symlink, so `600 root:root`
-must be set on the file under `/data`. `CAPE_DIR` (and optionally `PYTHON`) are
-read from this file, so the agent plugin needs no edits.
 
-**(b) AWS Secrets Manager.** Leave `/etc/cape/uxi.env` absent and set these in
-the agent plugin wrapper instead:
-```bash
-export UXI_SECRET_ID="test_secrets"    # may be a shared multi-app secret
-export AWS_REGION="us-east-1"
-```
-The secret is a JSON key/value map; keys default to `uxi_client_id` /
-`uxi_client_secret` (falling back to `client_id` / `client_secret`).
-The agent runs as **root**, so root needs AWS credentials.
-
-### 4. Install the agent plugin
-```bash
-sudo mkdir -p /usr/lib/check_mk_agent/plugins/300
-sudo cp /opt/cape/checkmk/agent_plugin/uxi_piggyback /usr/lib/check_mk_agent/plugins/300/
-sudo chmod +x /usr/lib/check_mk_agent/plugins/300/uxi_piggyback
-```
-*Data-disk layout* — symlink instead of copy (`git pull` then updates it):
+### 5. Symlink 2 — agent plugin
+`300` = a 5-minute cache interval, which keeps UXI API usage modest (~51 status
+calls plus one query per metric per run).
 ```bash
 sudo mkdir -p /usr/lib/check_mk_agent/plugins/300
 sudo chmod +x /data/cape/repo/checkmk/agent_plugin/uxi_piggyback
 sudo ln -sfn /data/cape/repo/checkmk/agent_plugin/uxi_piggyback \
   /usr/lib/check_mk_agent/plugins/300/uxi_piggyback
 ```
-`300` = a 5-minute cache interval, which keeps UXI API usage modest (the
-collector makes ~51 status calls plus one query per metric). Verify:
-```bash
-sudo /usr/lib/check_mk_agent/plugins/300/uxi_piggyback | head -20
-```
-You should see `<<<uxi_fleet...>>>` followed by `<<<<uxi-...>>>>` blocks.
-Empty output means credentials failed — rerun without `2>/dev/null` to see why.
 
-### 5. Install the check plugins
-```bash
-sudo -u cmk mkdir -p /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based
-sudo -u cmk cp /opt/cape/checkmk/cmk_addons_plugins/uxi/agent_based/uxi.py \
-    /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based/
-sudo -iu cmk cmk -L | grep '^uxi_'      # expect: uxi_fleet uxi_issues uxi_metrics uxi_sensor
-```
-*Data-disk layout* — symlink the plugin file:
+### 6. Symlink 3 — check plugins
 ```bash
 sudo -u cmk mkdir -p /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based
 sudo ln -sfn /data/cape/repo/checkmk/cmk_addons_plugins/uxi/agent_based/uxi.py \
   /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py
-sudo -u cmk test -r /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py \
-  && echo "site user can read through the symlink"
-sudo -iu cmk cmk -L | grep '^uxi_'      # must list all four
 ```
-If `cmk -L` lists nothing, the site user cannot traverse `/data` — check that
-`/data` and `/data/cape` are `755` (the symlink itself is not the problem).
 
-### 6. Create the hosts (DCD)
+### 7. Checkpoint — verify before creating hosts
 ```bash
-sudo -iu cmk python3 /opt/cape/checkmk/setup_dcd.py --site cmk --source-host checkmk
+sudo /usr/lib/check_mk_agent/plugins/300/uxi_piggyback | head -5
+sudo -iu cmk cmk -L | grep '^uxi_'
+```
+Expect piggyback blocks from the first, and all four plugins
+(`uxi_fleet uxi_issues uxi_metrics uxi_sensor`) from the second.
+
+**Stop here if either is empty** — creating hosts first only hides the cause.
+No piggyback output means credentials failed (rerun the plugin without
+`2>/dev/null` to see the error). No plugins listed means the site user cannot
+traverse `/data`; recheck the `755` in step 2.
+
+### 8. Create the hosts (DCD)
+```bash
+sudo -iu cmk python3 /data/cape/repo/checkmk/setup_dcd.py --site cmk --source-host checkmk
 sudo -iu cmk cmk -O
 sudo -iu cmk omd restart dcd
 ```
 `--source-host` is the Checkmk host whose agent carries the piggyback data —
-i.e. the host you installed the agent plugin on.
+i.e. the host from step 5.
 
 `setup_dcd.py` is idempotent and creates three things: the WATO folder
 `UXI Sensors`, a DCD piggyback connection that auto-creates/removes `uxi-*`
@@ -175,7 +140,7 @@ the fleet** — delete the `UXI-NOTIFY-SUPPRESSION` block from
 `etc/check_mk/conf.d/wato/rules.mk`. Pass `--no-suppress-notifications` to skip
 it entirely.
 
-### 7. Verify
+### 9. Verify
 ```bash
 sudo -iu cmk cmk --list-hosts | grep -c '^uxi-'
 sudo -iu cmk bash -lc 'printf "GET services\nFilter: host_name ~ ^uxi-\nColumns: description state\n" | lq' \
@@ -188,88 +153,33 @@ sudo -iu cmk cmk -II $(sudo -iu cmk cmk --list-hosts | grep '^uxi-' | tr '\n' ' 
 sudo -iu cmk cmk -O
 ```
 
-## Install on /data — complete sequence
-
-Everything above, condensed into one copy-paste run for the data-disk layout.
-Code and credentials live on `/data`; every path Checkmk expects is a symlink.
-Substitute your site name for `cmk` and the host running the agent for
-`checkmk`.
-
+## Updating
 ```bash
-# 1. Layout. Every parent must be traversable by the site user (755),
-#    or check-plugin discovery silently finds nothing.
-sudo mkdir -p /data/cape/etc
-sudo git clone https://github.com/jtklabs/cape.git /data/cape/repo
-sudo chmod 755 /data /data/cape
-
-# 2. Credentials on /data (600 root:root applies to the TARGET, not the link).
-#    CAPE_DIR here is how the agent plugin finds the code — no script edits.
-sudo tee /data/cape/etc/uxi.env >/dev/null <<'EOF'
-UXI_CLIENT_ID=your-client-id
-UXI_CLIENT_SECRET=your-client-secret
-CAPE_DIR=/data/cape/repo
-EOF
-sudo chmod 600 /data/cape/etc/uxi.env
-sudo chown root:root /data/cape/etc/uxi.env
-
-# 3. SYMLINK 1 — credentials
-sudo mkdir -p /etc/cape && sudo chmod 700 /etc/cape
-sudo ln -sfn /data/cape/etc/uxi.env /etc/cape/uxi.env
-
-# 4. SYMLINK 2 — agent plugin (5-minute cache interval)
-sudo mkdir -p /usr/lib/check_mk_agent/plugins/300
-sudo chmod +x /data/cape/repo/checkmk/agent_plugin/uxi_piggyback
-sudo ln -sfn /data/cape/repo/checkmk/agent_plugin/uxi_piggyback \
-  /usr/lib/check_mk_agent/plugins/300/uxi_piggyback
-
-# 5. SYMLINK 3 — check plugins
-sudo -u cmk mkdir -p /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based
-sudo ln -sfn /data/cape/repo/checkmk/cmk_addons_plugins/uxi/agent_based/uxi.py \
-  /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py
-
-# 6. Checkpoint — verify before creating hosts
-sudo /usr/lib/check_mk_agent/plugins/300/uxi_piggyback | head -5   # piggyback blocks
-sudo -iu cmk cmk -L | grep '^uxi_'                                  # all four plugins
-
-# 7. Hosts via DCD, then apply
-sudo -iu cmk python3 /data/cape/repo/checkmk/setup_dcd.py --site cmk --source-host checkmk
-sudo -iu cmk cmk -O
-sudo -iu cmk omd restart dcd
-
-# 8. Verify (hosts appear within ~60s)
-sudo -iu cmk cmk --list-hosts | grep -c '^uxi-'
+sudo git -C /data/cape/repo pull
+sudo -iu cmk cmk -O          # only needed for check-plugin changes
 ```
-
-Stop at step 6 if either check is empty — creating hosts first only makes the
-problem harder to see. No piggyback output means credentials failed (rerun the
-plugin without `2>/dev/null` to see the error); no plugins listed means the site
-user cannot traverse `/data`.
-
-Updating later is `sudo git -C /data/cape/repo pull` — the symlinks point at the
-repo, so both plugins update in place; follow with `cmk -O` for check-plugin
-changes.
+The symlinks point at the checkout, so both plugins update in place. Collector
+changes also need the caches cleared — see Troubleshooting.
 
 ## Uninstall
 ```bash
-sudo -iu cmk python3 /opt/cape/checkmk/uninstall.py --site cmk --dry-run   # preview
-sudo -iu cmk python3 /opt/cape/checkmk/uninstall.py --site cmk
+sudo -iu cmk python3 /data/cape/repo/checkmk/uninstall.py --site cmk --dry-run   # preview
+sudo -iu cmk python3 /data/cape/repo/checkmk/uninstall.py --site cmk
 sudo -iu cmk cmk -O && sudo -iu cmk omd restart dcd
 ```
-That removes the DCD connection, the folder and its hosts, and the
-notification rules. Then remove the files and data:
+That removes the DCD connection, the folder and its hosts, and the notification
+rules. Then the symlinks, data and caches:
 ```bash
 sudo rm -f /usr/lib/check_mk_agent/plugins/300/uxi_piggyback
-sudo rm -rf /etc/cape /opt/cape
+sudo rm -rf /etc/cape
 sudo rm -rf /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi
 sudo rm -f /var/lib/check_mk_agent/cache/plugins_uxi_piggyback.cache
 sudo sh -c 'rm -rf /omd/sites/cmk/tmp/check_mk/piggyback/uxi-*'
 sudo sh -c 'rm -rf /omd/sites/cmk/var/check_mk/rrd/uxi-*'
+sudo rm -rf /data/cape          # the actual files, incl. your credentials
 ```
-`rm -rf /etc/cape` deletes the symlink, not the file on `/data` — remove the
-data-disk copy too (it holds your credentials):
-```bash
-sudo rm -rf /data/cape
-```
+The first commands remove only symlinks — `/data/cape` holds the real
+credentials file, so don't skip that last line.
 
 ## Troubleshooting
 
@@ -281,9 +191,16 @@ sudo rm -f /omd/sites/cmk/tmp/check_mk/cache/checkmk                   # site fe
 sudo sh -c 'rm -rf /omd/sites/cmk/tmp/check_mk/piggyback/uxi-*'        # piggyback spool
 ```
 Then trigger the agent and wait for the async plugin to finish before
-re-fetching (it takes ~60s for 51 sensors):
+re-fetching (~60s for 51 sensors):
 ```bash
 sudo check_mk_agent >/dev/null; sleep 60; sudo -iu cmk cmk -n checkmk >/dev/null
+```
+
+**`cmk -L` lists no uxi plugins.** The site user cannot traverse `/data`.
+Confirm with:
+```bash
+sudo -u cmk test -r /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py \
+  && echo readable || echo "blocked — check 755 on /data and /data/cape"
 ```
 
 **Globs under the site tmp directory silently match nothing.** A non-root shell
