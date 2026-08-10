@@ -29,8 +29,11 @@ fi
 # Credentials for Secrets Manager come from the instance role / profile.
 # If the agent runs as root without one: export AWS_PROFILE=... or key vars.
 
-CAPE_DIR="/opt/cape"           # directory containing the cape/ package
-PYTHON="/usr/bin/python3"
+# Both may be overridden from /etc/cape/uxi.env (sourced above), so this
+# script works unedited for any layout — e.g. CAPE_DIR=/data/cape when the
+# code lives on a data disk and is symlinked into place.
+CAPE_DIR="${CAPE_DIR:-/opt/cape}"   # directory containing the cape/ package
+PYTHON="${PYTHON:-/usr/bin/python3}"
 
 cd "$CAPE_DIR" || exit 0
 # stderr (logging) must not pollute agent output

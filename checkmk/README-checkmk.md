@@ -45,9 +45,34 @@ python3 -c "import requests" || sudo pip3 install requests
 ```
 
 ### 2. Deploy the collector
+
+**Standard layout** — everything under `/opt`:
 ```bash
 sudo git clone https://github.com/jtklabs/cape.git /opt/cape
 ```
+
+**Data-disk layout** — all files live on `/data`, symlinked into place. Verified
+working: Checkmk discovers symlinked check plugins and executes symlinked agent
+plugins.
+```bash
+sudo mkdir -p /data/cape
+sudo git clone https://github.com/jtklabs/cape.git /data/cape/repo
+sudo mkdir -p /data/cape/etc
+# Every parent must be traversable by the site user, or plugin discovery fails
+sudo chmod 755 /data /data/cape
+```
+Then use these paths in the steps below (each is a symlink into `/data`):
+
+| Needs to be at | Symlink target on `/data` |
+|---|---|
+| `/opt/cape` (code) | `/data/cape/repo` |
+| `/etc/cape/uxi.env` (credentials) | `/data/cape/etc/uxi.env` |
+| `/usr/lib/check_mk_agent/plugins/300/uxi_piggyback` | `/data/cape/repo/checkmk/agent_plugin/uxi_piggyback` |
+| `<site>/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py` | `/data/cape/repo/checkmk/cmk_addons_plugins/uxi/agent_based/uxi.py` |
+
+Symlinking the agent plugin straight at the repo means `git pull` updates it in
+place. The check plugin is the same file the site loads, so a pull plus
+`cmk -O` is enough to roll out changes.
 
 ### 3. Credentials — pick ONE
 
@@ -61,6 +86,22 @@ UXI_CLIENT_SECRET=your-client-secret
 EOF
 sudo chmod 600 /etc/cape/uxi.env && sudo chown root:root /etc/cape/uxi.env
 ```
+
+*Data-disk layout:* write the real file to `/data/cape/etc/uxi.env`, add
+`CAPE_DIR=/data/cape/repo` to it so the wrapper finds the code, then symlink:
+```bash
+sudo tee /data/cape/etc/uxi.env >/dev/null <<'EOF'
+UXI_CLIENT_ID=your-client-id
+UXI_CLIENT_SECRET=your-client-secret
+CAPE_DIR=/data/cape/repo
+EOF
+sudo chmod 600 /data/cape/etc/uxi.env && sudo chown root:root /data/cape/etc/uxi.env
+sudo mkdir -p /etc/cape && sudo chmod 700 /etc/cape
+sudo ln -sfn /data/cape/etc/uxi.env /etc/cape/uxi.env
+```
+Permissions are enforced on the **target**, not the symlink, so `600 root:root`
+must be set on the file under `/data`. `CAPE_DIR` (and optionally `PYTHON`) are
+read from this file, so the agent plugin needs no edits.
 
 **(b) AWS Secrets Manager.** Leave `/etc/cape/uxi.env` absent and set these in
 the agent plugin wrapper instead:
@@ -78,6 +119,13 @@ sudo mkdir -p /usr/lib/check_mk_agent/plugins/300
 sudo cp /opt/cape/checkmk/agent_plugin/uxi_piggyback /usr/lib/check_mk_agent/plugins/300/
 sudo chmod +x /usr/lib/check_mk_agent/plugins/300/uxi_piggyback
 ```
+*Data-disk layout* — symlink instead of copy (`git pull` then updates it):
+```bash
+sudo mkdir -p /usr/lib/check_mk_agent/plugins/300
+sudo chmod +x /data/cape/repo/checkmk/agent_plugin/uxi_piggyback
+sudo ln -sfn /data/cape/repo/checkmk/agent_plugin/uxi_piggyback \
+  /usr/lib/check_mk_agent/plugins/300/uxi_piggyback
+```
 `300` = a 5-minute cache interval, which keeps UXI API usage modest (the
 collector makes ~51 status calls plus one query per metric). Verify:
 ```bash
@@ -93,6 +141,17 @@ sudo -u cmk cp /opt/cape/checkmk/cmk_addons_plugins/uxi/agent_based/uxi.py \
     /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based/
 sudo -iu cmk cmk -L | grep '^uxi_'      # expect: uxi_fleet uxi_issues uxi_metrics uxi_sensor
 ```
+*Data-disk layout* — symlink the plugin file:
+```bash
+sudo -u cmk mkdir -p /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based
+sudo ln -sfn /data/cape/repo/checkmk/cmk_addons_plugins/uxi/agent_based/uxi.py \
+  /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py
+sudo -u cmk test -r /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py \
+  && echo "site user can read through the symlink"
+sudo -iu cmk cmk -L | grep '^uxi_'      # must list all four
+```
+If `cmk -L` lists nothing, the site user cannot traverse `/data` — check that
+`/data` and `/data/cape` are `755` (the symlink itself is not the problem).
 
 ### 6. Create the hosts (DCD)
 ```bash
@@ -139,6 +198,11 @@ sudo rm -rf /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi
 sudo rm -f /var/lib/check_mk_agent/cache/plugins_uxi_piggyback.cache
 sudo sh -c 'rm -rf /omd/sites/cmk/tmp/check_mk/piggyback/uxi-*'
 sudo sh -c 'rm -rf /omd/sites/cmk/var/check_mk/rrd/uxi-*'
+```
+`rm -rf /etc/cape` deletes the symlink, not the file on `/data` — remove the
+data-disk copy too (it holds your credentials):
+```bash
+sudo rm -rf /data/cape
 ```
 
 ## Troubleshooting
