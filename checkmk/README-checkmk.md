@@ -71,9 +71,15 @@ installing from.
 SITE=your_site_name
 
 # The host, AS NAMED IN CHECKMK, whose agent will carry the UXI data.
-# Usually the Checkmk server monitoring itself. `cmk --list-hosts` shows names.
+# Usually the Checkmk server monitoring itself.
+# `sudo -iu "$SITE" cmk --list-hosts` shows the names.
 AGENT_HOST=your_agent_host
 ```
+
+> **`cmk` is not a system command.** It lives at `/omd/sites/$SITE/bin/cmk` and
+> is only on the site user's PATH, so every `cmk` call below runs via
+> `sudo -iu "$SITE"`. Plain `sudo cmk ...` fails with "command not found" on
+> every Checkmk version — that is not a 2.4-vs-2.5 difference.
 
 Confirm they're right before continuing — a wrong `SITE` writes into a
 non-existent path, and a wrong `AGENT_HOST` makes DCD ignore the piggyback data:
@@ -236,7 +242,22 @@ can't read those directories to expand `uxi-*`, so `sudo rm -rf .../uxi-*`
 becomes a literal no-op. Always wrap: `sudo sh -c "rm -rf .../uxi-*"`.
 
 **`Check_MK Discovery` shows WARN right after rollout.** Stale — it clears on
-its next scheduled run. Confirm with `cmk --check-discovery <host>`.
+its next scheduled run. Confirm with
+`sudo -iu "$SITE" cmk --check-discovery <host>`.
+
+**`cmk: command not found` / `sudo: cmk: command not found`.** `cmk` is not a
+system binary — it lives at `/omd/sites/$SITE/bin/cmk` and is only on the *site
+user's* PATH. This is not a version difference; it applies to every Checkmk
+release. Always run it through a site login shell:
+```bash
+sudo -iu "$SITE" cmk --list-hosts        # correct
+sudo cmk --list-hosts                    # fails: not on root's PATH
+sudo -u "$SITE" cmk --list-hosts         # also fails: -u without -i skips the login PATH
+```
+The `-i` matters: it starts a login shell so the site's environment is loaded.
+`omd` is different — it *is* a system binary at `/usr/bin/omd`, so `sudo omd
+sites` works, but subcommands that act on a running site (like
+`omd restart dcd`) still need `sudo -iu "$SITE"`.
 
 **`omd restart dcd` says "site does not exist".** Run it as the site user
 (`sudo -iu "$SITE" omd restart dcd`), not as root.
