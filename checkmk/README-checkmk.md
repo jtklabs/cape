@@ -31,10 +31,21 @@ executes symlinked agent plugins.
 |---|---|
 | `/etc/cape/uxi.env` | `/data/cape/etc/uxi.env` |
 | `/usr/lib/check_mk_agent/plugins/300/uxi_piggyback` | `/data/cape/repo/checkmk/agent_plugin/uxi_piggyback` |
-| `<site>/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py` | `/data/cape/repo/checkmk/cmk_addons_plugins/uxi/agent_based/uxi.py` |
+| `/omd/sites/$SITE/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py` | `/data/cape/repo/checkmk/cmk_addons_plugins/uxi/agent_based/uxi.py` |
 
-The code itself is never copied — the symlinks point straight at the git
-checkout, so `git pull` updates both plugins in place.
+The code is never copied — the symlinks point straight at the git checkout, so
+`git pull` updates both plugins in place.
+
+Repo layout, for reference (`/data/cape/repo` is the clone root):
+```
+/data/cape/repo/
+├── cape/                                   # the collector package
+└── checkmk/
+    ├── agent_plugin/uxi_piggyback          # -> agent plugins dir
+    ├── cmk_addons_plugins/uxi/agent_based/uxi.py   # -> site plugins dir
+    ├── setup_dcd.py
+    └── uninstall.py
+```
 
 ## Services created
 
@@ -50,8 +61,26 @@ Offline (or non-testing) sensors emit no `uxi_metrics` section and so get no
 
 ## Install
 
-Substitute your site name for `cmk`, and `checkmk` for the host whose agent will
-carry the data (usually the Checkmk server itself). Run top to bottom.
+### 0. Set these two values first
+
+Every command below uses them, so export them once in the shell you're
+installing from.
+
+```bash
+# Your OMD site name — `omd sites` lists them (the SITE column)
+SITE=your_site_name
+
+# The host, AS NAMED IN CHECKMK, whose agent will carry the UXI data.
+# Usually the Checkmk server monitoring itself. `cmk --list-hosts` shows names.
+AGENT_HOST=your_agent_host
+```
+
+Confirm they're right before continuing — a wrong `SITE` writes into a
+non-existent path, and a wrong `AGENT_HOST` makes DCD ignore the piggyback data:
+```bash
+sudo omd sites
+sudo -iu "$SITE" cmk --list-hosts | grep -x "$AGENT_HOST" && echo "AGENT_HOST OK"
+```
 
 ### 1. Prerequisites
 ```bash
@@ -105,15 +134,15 @@ sudo ln -sfn /data/cape/repo/checkmk/agent_plugin/uxi_piggyback \
 
 ### 6. Symlink 3 — check plugins
 ```bash
-sudo -u cmk mkdir -p /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based
+sudo -u "$SITE" mkdir -p "/omd/sites/$SITE/local/lib/python3/cmk_addons/plugins/uxi/agent_based"
 sudo ln -sfn /data/cape/repo/checkmk/cmk_addons_plugins/uxi/agent_based/uxi.py \
-  /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py
+  "/omd/sites/$SITE/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py"
 ```
 
 ### 7. Checkpoint — verify before creating hosts
 ```bash
 sudo /usr/lib/check_mk_agent/plugins/300/uxi_piggyback | head -5
-sudo -iu cmk cmk -L | grep '^uxi_'
+sudo -iu "$SITE" cmk -L | grep '^uxi_'
 ```
 Expect piggyback blocks from the first, and all four plugins
 (`uxi_fleet uxi_issues uxi_metrics uxi_sensor`) from the second.
@@ -125,58 +154,57 @@ traverse `/data`; recheck the `755` in step 2.
 
 ### 8. Create the hosts (DCD)
 ```bash
-sudo -iu cmk python3 /data/cape/repo/checkmk/setup_dcd.py --site cmk --source-host checkmk
-sudo -iu cmk cmk -O
-sudo -iu cmk omd restart dcd
+sudo -iu "$SITE" python3 /data/cape/repo/checkmk/setup_dcd.py \
+  --site "$SITE" --source-host "$AGENT_HOST"
+sudo -iu "$SITE" cmk -O
+sudo -iu "$SITE" omd restart dcd
 ```
-`--source-host` is the Checkmk host whose agent carries the piggyback data —
-i.e. the host from step 5.
 
 `setup_dcd.py` is idempotent and creates three things: the WATO folder
 `UXI Sensors`, a DCD piggyback connection that auto-creates/removes `uxi-*`
 hosts, and rules suppressing host+service notifications for that folder so a
 first rollout can't page anyone. **Remove that suppression once you've triaged
 the fleet** — delete the `UXI-NOTIFY-SUPPRESSION` block from
-`etc/check_mk/conf.d/wato/rules.mk`. Pass `--no-suppress-notifications` to skip
-it entirely.
+`/omd/sites/$SITE/etc/check_mk/conf.d/wato/rules.mk`. Pass
+`--no-suppress-notifications` to skip it entirely.
 
 ### 9. Verify
 ```bash
-sudo -iu cmk cmk --list-hosts | grep -c '^uxi-'
-sudo -iu cmk bash -lc 'printf "GET services\nFilter: host_name ~ ^uxi-\nColumns: description state\n" | lq' \
+sudo -iu "$SITE" cmk --list-hosts | grep -c '^uxi-'
+sudo -iu "$SITE" bash -lc 'printf "GET services\nFilter: host_name ~ ^uxi-\nColumns: description state\n" | lq' \
   | sort | uniq -c
 ```
 Hosts appear within ~60s of the DCD restart. If services are missing, run
 discovery explicitly:
 ```bash
-sudo -iu cmk cmk -II $(sudo -iu cmk cmk --list-hosts | grep '^uxi-' | tr '\n' ' ')
-sudo -iu cmk cmk -O
+sudo -iu "$SITE" cmk -II $(sudo -iu "$SITE" cmk --list-hosts | grep '^uxi-' | tr '\n' ' ')
+sudo -iu "$SITE" cmk -O
 ```
 
 ## Updating
 ```bash
 sudo git -C /data/cape/repo pull
-sudo -iu cmk cmk -O          # only needed for check-plugin changes
+sudo -iu "$SITE" cmk -O      # only needed for check-plugin changes
 ```
 The symlinks point at the checkout, so both plugins update in place. Collector
 changes also need the caches cleared — see Troubleshooting.
 
 ## Uninstall
 ```bash
-sudo -iu cmk python3 /data/cape/repo/checkmk/uninstall.py --site cmk --dry-run   # preview
-sudo -iu cmk python3 /data/cape/repo/checkmk/uninstall.py --site cmk
-sudo -iu cmk cmk -O && sudo -iu cmk omd restart dcd
+sudo -iu "$SITE" python3 /data/cape/repo/checkmk/uninstall.py --site "$SITE" --dry-run
+sudo -iu "$SITE" python3 /data/cape/repo/checkmk/uninstall.py --site "$SITE"
+sudo -iu "$SITE" cmk -O && sudo -iu "$SITE" omd restart dcd
 ```
 That removes the DCD connection, the folder and its hosts, and the notification
 rules. Then the symlinks, data and caches:
 ```bash
 sudo rm -f /usr/lib/check_mk_agent/plugins/300/uxi_piggyback
 sudo rm -rf /etc/cape
-sudo rm -rf /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi
+sudo rm -rf "/omd/sites/$SITE/local/lib/python3/cmk_addons/plugins/uxi"
 sudo rm -f /var/lib/check_mk_agent/cache/plugins_uxi_piggyback.cache
-sudo sh -c 'rm -rf /omd/sites/cmk/tmp/check_mk/piggyback/uxi-*'
-sudo sh -c 'rm -rf /omd/sites/cmk/var/check_mk/rrd/uxi-*'
-sudo rm -rf /data/cape          # the actual files, incl. your credentials
+sudo sh -c "rm -rf /omd/sites/$SITE/tmp/check_mk/piggyback/uxi-*"
+sudo sh -c "rm -rf /omd/sites/$SITE/var/check_mk/rrd/uxi-*"
+sudo rm -rf /data/cape        # the actual files, incl. your credentials
 ```
 The first commands remove only symlinks — `/data/cape` holds the real
 credentials file, so don't skip that last line.
@@ -186,32 +214,32 @@ credentials file, so don't skip that last line.
 **Changes to the collector don't show up.** Piggyback output is cached in
 *three* places. Clear all of them:
 ```bash
-sudo rm -f /var/lib/check_mk_agent/cache/plugins_uxi_piggyback.cache   # agent plugin cache
-sudo rm -f /omd/sites/cmk/tmp/check_mk/cache/checkmk                   # site fetch cache
-sudo sh -c 'rm -rf /omd/sites/cmk/tmp/check_mk/piggyback/uxi-*'        # piggyback spool
+sudo rm -f /var/lib/check_mk_agent/cache/plugins_uxi_piggyback.cache    # agent plugin cache
+sudo rm -f "/omd/sites/$SITE/tmp/check_mk/cache/$AGENT_HOST"            # site fetch cache
+sudo sh -c "rm -rf /omd/sites/$SITE/tmp/check_mk/piggyback/uxi-*"       # piggyback spool
 ```
 Then trigger the agent and wait for the async plugin to finish before
 re-fetching (~60s for 51 sensors):
 ```bash
-sudo check_mk_agent >/dev/null; sleep 60; sudo -iu cmk cmk -n checkmk >/dev/null
+sudo check_mk_agent >/dev/null; sleep 60
+sudo -iu "$SITE" cmk -n "$AGENT_HOST" >/dev/null
 ```
 
-**`cmk -L` lists no uxi plugins.** The site user cannot traverse `/data`.
-Confirm with:
+**`cmk -L` lists no uxi plugins.** The site user cannot traverse `/data`:
 ```bash
-sudo -u cmk test -r /omd/sites/cmk/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py \
+sudo -u "$SITE" test -r "/omd/sites/$SITE/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py" \
   && echo readable || echo "blocked — check 755 on /data and /data/cape"
 ```
 
 **Globs under the site tmp directory silently match nothing.** A non-root shell
 can't read those directories to expand `uxi-*`, so `sudo rm -rf .../uxi-*`
-becomes a literal no-op. Always wrap: `sudo sh -c 'rm -rf .../uxi-*'`.
+becomes a literal no-op. Always wrap: `sudo sh -c "rm -rf .../uxi-*"`.
 
 **`Check_MK Discovery` shows WARN right after rollout.** Stale — it clears on
 its next scheduled run. Confirm with `cmk --check-discovery <host>`.
 
 **`omd restart dcd` says "site does not exist".** Run it as the site user
-(`sudo -iu cmk omd restart dcd`), not as root.
+(`sudo -iu "$SITE" omd restart dcd`), not as root.
 
 ## Host naming
 Default: sanitized sensor name with a `uxi-` prefix
