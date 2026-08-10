@@ -217,6 +217,94 @@ credentials file, so don't skip that last line.
 
 ## Troubleshooting
 
+### Hosts exist but only show `Check_MK` and `Check_MK Discovery`
+
+The commonest failure, and it does **not** resolve on its own — waiting will not
+help. The piggyback data can be perfectly fine (visible in the spool files) and
+still produce no services, because Checkmk needs *both* the data and a plugin
+that understands it, at the moment discovery runs.
+
+Work through these in order.
+
+**1. Are the check plugins loaded?**
+```bash
+sudo -iu "$SITE" cmk -L | grep '^uxi_'
+```
+Must list four: `uxi_fleet uxi_issues uxi_metrics uxi_sensor`.
+
+*Empty* is the usual answer when the data looks fine. Checkmk reads the
+`<<<uxi_sensor>>>` sections, has no plugin registered for them, and silently
+creates nothing. Diagnose the symlink:
+```bash
+# Does the link resolve to a real file?
+readlink -f "/omd/sites/$SITE/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py"
+# Can the SITE USER read through it? (this is the usual culprit)
+sudo -u "$SITE" test -r "/omd/sites/$SITE/local/lib/python3/cmk_addons/plugins/uxi/agent_based/uxi.py" \
+  && echo readable || echo "BLOCKED"
+```
+`BLOCKED` means the site user cannot traverse `/data`. Fix and re-check:
+```bash
+sudo chmod 755 /data /data/cape
+sudo -iu "$SITE" cmk -L | grep '^uxi_'
+```
+Also confirm the path is exactly `.../cmk_addons/plugins/uxi/agent_based/uxi.py`
+— Checkmk only scans that structure, and a file one directory off is ignored
+without warning.
+
+**2. Plugins listed, but still no services? Discovery never ran with them
+loaded.**
+
+DCD discovers services **once, at host creation**. If the hosts were created
+before the plugins were installed (or before piggyback data arrived), that one
+chance is gone and DCD will not retry. Re-run discovery by hand:
+```bash
+sudo -iu "$SITE" cmk -II $(sudo -iu "$SITE" cmk --list-hosts | grep '^uxi-' | tr '\n' ' ')
+sudo -iu "$SITE" cmk -O
+```
+This is why the install order matters: plugins (step 6) **before** hosts
+(step 8).
+
+**3. Confirm Checkmk actually parses the sections for one host:**
+```bash
+sudo -iu "$SITE" cmk -II -vv uxi-<some-host> 2>&1 | grep -iE 'Add sections|uxi_|piggyback file'
+```
+Expect `Read piggyback file ...` and
+`Add sections: [... 'uxi_issues', 'uxi_metrics', 'uxi_sensor']`, followed by
+`1 uxi_sensor` etc. under *EXECUTING DISCOVERY PLUGINS*.
+
+- Sections listed but no plugins execute → back to (1); the plugins aren't loaded.
+- No sections at all → the piggyback data isn't reaching this host; check the
+  spool: `sudo ls /omd/sites/$SITE/tmp/check_mk/piggyback/`.
+
+### "Cannot resolve hostname" / no-IP warnings
+
+Piggyback hosts have no address, so Checkmk must be told not to look for one.
+If DCD's per-host attributes didn't apply, hosts default to *Checkmk agent +
+IPv4* and every check tries to resolve an address that doesn't exist.
+
+Fix once at the **folder**, and all hosts inherit it — Setup → Hosts →
+*UXI Sensors* → Properties:
+
+| Setting | Value |
+|---|---|
+| IP address family | **No IP** |
+| Checkmk agent / API integrations | **No API integrations, no Checkmk agent** |
+| SNMP | **No SNMP** |
+
+Then activate changes. Current versions of `setup_dcd.py` set these on the
+folder at creation, so fresh installs shouldn't hit this; the UI route is the
+reliable fix for folders created earlier.
+
+### Notifications are disabled
+
+Deliberate. `setup_dcd.py` adds a suppression rule so a first rollout — where
+offline sensors immediately go CRIT — cannot page anyone. Re-enable by deleting
+the block marked `UXI-NOTIFY-SUPPRESSION` from
+`/omd/sites/$SITE/etc/check_mk/conf.d/wato/rules.mk`, then activate. Use
+`--no-suppress-notifications` to skip it on future installs.
+
+### Other
+
 **Changes to the collector don't show up.** Piggyback output is cached in
 *three* places. Clear all of them:
 ```bash
