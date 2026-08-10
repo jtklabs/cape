@@ -101,15 +101,27 @@ Run it on a schedule (cron) to build your own health history — each sweep is a
 point-in-time snapshot. Note: this endpoint is verified working but is not in
 the published API reference or official SDK, so treat it as subject to change.
 
-## Historical test-result metrics — not pullable (as of 2026-07)
-The REST API has **no pull endpoint for raw time-series test results**
-(latency/throughput per test over time). Verified live (all candidate paths
-404) and against the official [pyhpeuxi SDK](https://github.com/aruba/pyhpeuxi),
-which wraps the exact same endpoint set. HPE only offers that data via push
-integrations (webhooks / S3 / BigQuery / Splunk — **not permitted in this
-environment**) or through the **Aruba Central integration** (Central's own API
-is pull-based — an option if this org runs Central). If HPE ships a results
-pull API, add a row to `RESOURCES` in `config.py`.
+## Test-result metrics — `cape/metrics.py` (pull-based)
+The documented API host exposes no test results, but the **dashboard's own
+backend does**, and it accepts the same OAuth bearer token — so metrics are
+pulled directly, with no webhooks or push destinations:
+
+```
+POST https://dashboard.capenetworks.com/api/test-results/actions/structured-query
+{"measurements":["dhcp"], "selectors":["MEAN(elapsed_time) as elapsed_time"],
+ "groups":["time(600s)","sensor_uid"], "filters":{"sensors":null,...},
+ "where":[], "time_greater_than":"now() - 3600s"}
+```
+
+Grouping by `sensor_uid` returns the whole fleet in one request, keyed by the
+same UUIDs as `/sensors`, so it costs one request per metric. Collected:
+DHCP / DNS / Wi-Fi association / 802.1X EAP + total auth latency, channel
+utilisation, RSSI, and RX/TX data rates.
+
+⚠️ This endpoint is **undocumented and unversioned** and may change without
+notice. Each metric is queried independently and failures are logged and
+skipped, so a vendor-side change degrades to missing data rather than a broken
+run. Add or adjust entries in `METRICS` in `cape/metrics.py`.
 
 ## Pagination note
 The API returns `{"items", "count", "next"}`; the next-page token must be sent
