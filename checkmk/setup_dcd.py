@@ -45,7 +45,15 @@ def make_folder(root: str, folder_name: str, title: str) -> str:
             "__id": uuid.uuid4().hex,
             "title": title,
             "attributes": {
-                "meta_data": {"created_at": now, "created_by": None, "updated_at": now}
+                # Set on the FOLDER so every host inherits them, including any
+                # created outside DCD. Without tag_address_family=no-ip,
+                # Checkmk tries to resolve an address for these hosts and
+                # floods you with "cannot resolve hostname" warnings.
+                "tag_agent": "no-agent",
+                "tag_snmp_ds": "no-snmp",
+                "tag_address_family": "no-ip",
+                "tag_piggyback": "piggyback",
+                "meta_data": {"created_at": now, "created_by": None, "updated_at": now},
             },
             "num_hosts": 0,
             "lock": False,
